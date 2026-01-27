@@ -156,31 +156,27 @@ const commands = [
     name: "dntt",
     description: "Tạo đề nghị thanh toán (CHI) để QUẢN LÝ duyệt",
     options: [
-  { name: "amount", type: 10, description: "Số tiền", required: true },
-  {
-    name: "purpose",
-    type: 3,
-    description: "Mục đích",
-    required: true,
-    choices: [
-      { name: "Marketing", value: "marketing" },
-      { name: "Kho", value: "kho" },
-      { name: "Ship", value: "ship" },
-      { name: "Nhập hàng", value: "nhap_hang" },
-      { name: "Lương", value: "luong" },
-      { name: "Khác", value: "khac" }
-    ]
-  },
-  { name: "proof", type: 11, description: "Chứng từ (hình ảnh bắt buộc)", required: true },
-  { name: "note", type: 3, description: "Ghi chú", required: false }
-]
-
+      { name: "amount", type: 10, description: "Số tiền", required: true },
+      {
+        name: "purpose",
+        type: 3,
+        description: "Mục đích",
+        required: true,
+        choices: [
+          { name: "Marketing", value: "marketing" },
+          { name: "Kho", value: "kho" },
+          { name: "Ship", value: "ship" },
+          { name: "Nhập hàng", value: "nhap_hang" },
+          { name: "Lương", value: "luong" },
+          { name: "Khác", value: "khac" }
+        ]
       },
-      { name: "note", type: 3, description: "Ghi chú", required: false },
-      { name: "proof", type: 11, description: "Chứng từ (hình ảnh bắt buộc)", required: true }
+      { name: "proof", type: 11, description: "Chứng từ (hình ảnh bắt buộc)", required: true },
+      { name: "note", type: 3, description: "Ghi chú", required: false }
     ]
   }
 ];
+
 
 async function registerCommands() {
   const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
