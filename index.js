@@ -185,19 +185,23 @@ const commands = [
     options: [
       { name: "amount", type: 10, description: "Số tiền", required: true },
       {
-        name: "purpose",
-        type: 3,
-        description: "Mục đích",
-        required: true,
-        choices: [
-          { name: "Marketing", value: "marketing" },
-          { name: "Kho", value: "kho" },
-          { name: "Ship", value: "ship" },
-          { name: "Nhập hàng", value: "nhap_hang" },
-          { name: "Lương", value: "luong" },
-          { name: "Khác", value: "khac" }
-        ]
-      },
+  name: "purpose",
+  type: 3,
+  description: "Mục đích",
+  required: true,
+  choices: [
+    { name: "Hoàn tiền khách", value: "hoan_tien_khach" },
+    { name: "Văn phòng", value: "van_phong" },
+    { name: "Sửa chữa", value: "sua_chua" },
+    { name: "Đóng gói", value: "dong_goi" },
+    { name: "Marketing", value: "marketing" },
+    { name: "Ship", value: "ship" },
+    { name: "Nhập hàng", value: "nhap_hang" },
+    { name: "Lương", value: "luong" },
+    { name: "Khác", value: "khac" }
+  ]
+},
+
 
       // Required proof first
       { name: "proof1", type: 11, description: "Chứng từ 1 (bắt buộc)", required: true },
