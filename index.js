@@ -45,6 +45,9 @@ const auth = new google.auth.JWT({
 });
 const sheets = google.sheets({ version: "v4", auth });
 
+// In-memory lock to prevent concurrent processing of same DNTT code
+const processingCodes = new Set();
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
   partials: [Partials.Channel]
@@ -173,6 +176,22 @@ function truncateForEmbed(text, max = 950) {
   return text.slice(0, max - 3) + "...";
 }
 
+function buildProofEmbeds(mainEmbed, proofUrls) {
+  const url = "https://dntt.bot";
+  mainEmbed.setURL(url);
+  if (proofUrls.length > 0) mainEmbed.setImage(proofUrls[0]);
+  const embeds = [mainEmbed];
+  for (let i = 1; i < proofUrls.length; i++) {
+    embeds.push(new EmbedBuilder().setURL(url).setImage(proofUrls[i]));
+  }
+  return embeds;
+}
+
+function parseProofUrls(proofUrlCell) {
+  if (!proofUrlCell) return [];
+  return proofUrlCell.split("\n").filter(Boolean);
+}
+
 async function replyEphemeral(interaction, content) {
   // flags 64 = EPHEMERAL (đỡ warning future)
   return interaction.reply({ content, flags: 64 });
@@ -288,23 +307,21 @@ client.on("interactionCreate", async (interaction) => {
         "" // discord_message_id
       ]);
 
-      const proofDisplay = truncateForEmbed(
-        proofUrls.map((u, i) => `Ảnh ${i + 1}: ${u}`).join("\n"),
-        950
-      );
-
       // Post to #dntt for manager approval
       const embed = new EmbedBuilder()
         .setTitle(`Đề nghị thanh toán (DNTT): ${code}`)
+        .setColor(0xFFA500)
         .addFields(
           { name: "Số tiền", value: `${amount}`, inline: true },
           { name: "Mục đích", value: purpose, inline: true },
           { name: "Người đề nghị", value: `${requesterTag}`, inline: false },
           { name: "Channel tạo", value: `<#${sourceChannelId}>`, inline: false },
-          { name: "Ghi chú", value: note || "-", inline: false },
-          { name: `Chứng từ (${proofUrls.length} ảnh)`, value: proofDisplay || "-", inline: false }
+          { name: "Ghi chú", value: note || "-", inline: false }
         )
-        .setFooter({ text: `Chỉ role ${ROLE_MANAGER_NAME} được duyệt/từ chối. Từ chối phải có lý do.` });
+        .setFooter({ text: `Chỉ role ${ROLE_MANAGER_NAME} được duyệt/từ chối. Từ chối phải có lý do.` })
+        .setTimestamp();
+
+      const dnttEmbeds = buildProofEmbeds(embed, proofUrls);
 
       const approveRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`approve:${code}`).setLabel("Phê duyệt").setStyle(ButtonStyle.Success),
@@ -314,7 +331,7 @@ client.on("interactionCreate", async (interaction) => {
       let dnttMsgId = "";
       try {
         const dnttChannel = await client.channels.fetch(DNTT_CHANNEL_ID);
-        const msg = await dnttChannel.send({ embeds: [embed], components: [approveRow] });
+        const msg = await dnttChannel.send({ embeds: dnttEmbeds, components: [approveRow] });
         dnttMsgId = msg.id;
       } catch (e) {
         console.error("❌ Cannot send to DNTT channel (Missing Access?).", e?.rawError || e);
@@ -332,20 +349,23 @@ client.on("interactionCreate", async (interaction) => {
       // Post preview in source channel + Withdraw button
       const previewEmbed = new EmbedBuilder()
         .setTitle(`🧾 DNTT của bạn: ${code}`)
+        .setColor(0xFFA500)
         .setDescription("Trạng thái: **PENDING (chờ phê duyệt)**")
         .addFields(
           { name: "Số tiền", value: `${amount}`, inline: true },
           { name: "Mục đích", value: purpose, inline: true },
-          { name: "Ghi chú", value: note || "-", inline: false },
-          { name: `Chứng từ (${proofUrls.length} ảnh)`, value: proofDisplay || "-", inline: false }
+          { name: "Ghi chú", value: note || "-", inline: false }
         )
-        .setFooter({ text: "Nếu bạn tạo sai, bấm THU HỒI (chỉ hiệu lực khi còn PENDING)." });
+        .setFooter({ text: "Nếu bạn tạo sai, bấm THU HỒI (chỉ hiệu lực khi còn PENDING)." })
+        .setTimestamp();
+
+      const previewEmbeds = buildProofEmbeds(previewEmbed, proofUrls);
 
       const withdrawRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`withdraw:${code}`).setLabel("Thu hồi").setStyle(ButtonStyle.Danger)
       );
 
-      await interaction.channel.send({ embeds: [previewEmbed], components: [withdrawRow] });
+      await interaction.channel.send({ embeds: previewEmbeds, components: [withdrawRow] });
       return;
     }
 
@@ -355,45 +375,58 @@ client.on("interactionCreate", async (interaction) => {
 
       // WITHDRAW: requester cancels pending request
       if (action === "withdraw") {
-        const rowNum = await findRequestRowByCode(code);
-        if (!rowNum) {
-          await replyEphemeral(interaction, "❌ Không tìm thấy DNTT trong Google Sheet.");
+        if (processingCodes.has(code)) {
+          await replyEphemeral(interaction, "⏳ DNTT này đang được xử lý, vui lòng chờ...");
           return;
         }
-
-        const req = await readRequestRow(rowNum);
-
-        if (req.requester_id !== interaction.user.id) {
-          await replyEphemeral(interaction, "❌ Bạn không phải người tạo DNTT này nên không thể thu hồi.");
-          return;
-        }
-
-        if (req.status !== "PENDING") {
-          await replyEphemeral(interaction, `❌ DNTT này đã được xử lý (status: ${req.status}) nên không thể thu hồi.`);
-          return;
-        }
-
-        const decisionAt = isoNow();
-        await updateRequestRow(rowNum, {
-          status: "WITHDRAWN",
-          manager_tag: req.requester_tag,
-          decision_reason: "Thu hồi bởi người tạo",
-          decision_at: decisionAt
-        });
-
-        // Try disable buttons in #dntt post
+        processingCodes.add(code);
         try {
-          const dnttChannel = await client.channels.fetch(DNTT_CHANNEL_ID);
-          const msg = await dnttChannel.messages.fetch(req.discord_message_id);
-          await msg.edit({ content: `🟠 **ĐÃ THU HỒI** \`${code}\` | bởi **${req.requester_tag}**`, components: [] });
-        } catch {}
+          await interaction.deferUpdate();
 
-        // Disable withdraw button in preview message
-        await interaction.update({
-          content: `🟠 Bạn đã **THU HỒI** DNTT \`${code}\`.`,
-          embeds: interaction.message.embeds,
-          components: []
-        });
+          const rowNum = await findRequestRowByCode(code);
+          if (!rowNum) {
+            await interaction.followUp({ content: "❌ Không tìm thấy DNTT trong Google Sheet.", flags: 64 });
+            return;
+          }
+
+          const req = await readRequestRow(rowNum);
+
+          if (req.requester_id !== interaction.user.id) {
+            await interaction.followUp({ content: "❌ Bạn không phải người tạo DNTT này nên không thể thu hồi.", flags: 64 });
+            return;
+          }
+
+          if (req.status !== "PENDING") {
+            await interaction.followUp({ content: `❌ DNTT này đã được xử lý (status: ${req.status}) nên không thể thu hồi.`, flags: 64 });
+            return;
+          }
+
+          const decisionAt = isoNow();
+          await updateRequestRow(rowNum, {
+            status: "WITHDRAWN",
+            manager_tag: req.requester_tag,
+            decision_reason: "Thu hồi bởi người tạo",
+            decision_at: decisionAt
+          });
+
+          // Try disable buttons in #dntt post
+          try {
+            const dnttChannel = await client.channels.fetch(DNTT_CHANNEL_ID);
+            const msg = await dnttChannel.messages.fetch(req.discord_message_id);
+            await msg.edit({ content: `🟠 **ĐÃ THU HỒI** \`${code}\` | bởi **${req.requester_tag}**`, components: [] });
+          } catch (editErr) {
+            console.error(`❌ Failed to edit DNTT message for withdrawn ${code}:`, editErr);
+          }
+
+          // Disable withdraw button in preview message
+          await interaction.editReply({
+            content: `🟠 Bạn đã **THU HỒI** DNTT \`${code}\`.`,
+            embeds: interaction.message.embeds,
+            components: []
+          });
+        } finally {
+          processingCodes.delete(code);
+        }
         return;
       }
 
@@ -403,62 +436,92 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const rowNum = await findRequestRowByCode(code);
-      if (!rowNum) {
-        await replyEphemeral(interaction, "❌ Không tìm thấy DNTT trong Google Sheet.");
-        return;
-      }
-
-      const req = await readRequestRow(rowNum);
-      if (req.status !== "PENDING") {
-        await replyEphemeral(interaction, `❌ DNTT này đã được xử lý rồi (status: ${req.status}).`);
-        return;
-      }
-
       if (action === "approve") {
-        const managerTag = `${interaction.user.username}#${interaction.user.discriminator}`;
-        const decisionAt = isoNow();
-
-        await updateRequestRow(rowNum, {
-          status: "APPROVED",
-          manager_tag: managerTag,
-          decision_at: decisionAt,
-          decision_reason: ""
-        });
-
-        // Write to monthly sheet
-        const mSheet = monthSheetName(new Date());
-        await ensureSheetWithHeader(mSheet, MONTHLY_HEADER);
-        await appendRow(mSheet, [
-          decisionAt,
-          "CHI",
-          req.amount,
-          req.purpose,
-          req.requester_tag,
-          managerTag,
-          req.code,
-          req.note,
-          req.proof_url
-        ]);
-
-        // Update #dntt message, remove buttons
-        await interaction.update({
-          content: `✅ **ĐÃ PHÊ DUYỆT** \`${code}\` | duyệt bởi **${managerTag}**`,
-          components: []
-        });
-
-        // Notify back to source channel
+        if (processingCodes.has(code)) {
+          await replyEphemeral(interaction, "⏳ DNTT này đang được xử lý, vui lòng chờ...");
+          return;
+        }
+        processingCodes.add(code);
         try {
-          const sourceChannel = await client.channels.fetch(req.source_channel_id);
-          await sourceChannel.send(
-            `✅ <@${req.requester_id}> DNTT \`${code}\` đã **PHÊ DUYỆT** bởi **${managerTag}**. Số tiền: **${req.amount}**. Mục đích: **${req.purpose}**.`
-          );
-        } catch {}
+          // Defer immediately to prevent 3s timeout during sheet operations
+          await interaction.deferUpdate();
 
+          const rowNum = await findRequestRowByCode(code);
+          if (!rowNum) {
+            await interaction.followUp({ content: "❌ Không tìm thấy DNTT trong Google Sheet.", flags: 64 });
+            return;
+          }
+
+          const req = await readRequestRow(rowNum);
+          if (req.status !== "PENDING") {
+            await interaction.followUp({ content: `❌ DNTT này đã được xử lý rồi (status: ${req.status}).`, flags: 64 });
+            return;
+          }
+
+          const managerTag = `${interaction.user.username}#${interaction.user.discriminator}`;
+          const decisionAt = isoNow();
+
+          await updateRequestRow(rowNum, {
+            status: "APPROVED",
+            manager_tag: managerTag,
+            decision_at: decisionAt,
+            decision_reason: ""
+          });
+
+          // Write to monthly sheet
+          const mSheet = monthSheetName(new Date());
+          await ensureSheetWithHeader(mSheet, MONTHLY_HEADER);
+          await appendRow(mSheet, [
+            decisionAt,
+            "CHI",
+            req.amount,
+            req.purpose,
+            req.requester_tag,
+            managerTag,
+            req.code,
+            req.note,
+            req.proof_url
+          ]);
+
+          // Notify back to source channel (BEFORE editReply to ensure it always runs)
+          try {
+            const sourceChannel = await client.channels.fetch(req.source_channel_id);
+            const proofUrls = parseProofUrls(req.proof_url);
+            const notifyEmbed = new EmbedBuilder()
+              .setTitle(`✅ DNTT \`${code}\` đã được PHÊ DUYỆT`)
+              .setColor(0x00C853)
+              .addFields(
+                { name: "Số tiền", value: `${req.amount}`, inline: true },
+                { name: "Mục đích", value: req.purpose, inline: true },
+                { name: "Người duyệt", value: managerTag, inline: false }
+              )
+              .setTimestamp();
+            const notifyEmbeds = buildProofEmbeds(notifyEmbed, proofUrls);
+            await sourceChannel.send({
+              content: `<@${req.requester_id}>`,
+              embeds: notifyEmbeds
+            });
+          } catch (notifyErr) {
+            console.error(`❌ Failed to notify source channel for ${code}:`, notifyErr);
+          }
+
+          // Update #dntt message, remove buttons
+          await interaction.editReply({
+            content: `✅ **ĐÃ PHÊ DUYỆT** \`${code}\` | duyệt bởi **${managerTag}**`,
+            components: []
+          });
+        } finally {
+          processingCodes.delete(code);
+        }
         return;
       }
 
       if (action === "reject") {
+        if (processingCodes.has(code)) {
+          await replyEphemeral(interaction, "⏳ DNTT này đang được xử lý, vui lòng chờ...");
+          return;
+        }
+        // NOTE: Do NOT defer here — showModal requires an unacknowledged interaction
         const modal = new ModalBuilder()
           .setCustomId(`reject_modal:${code}`)
           .setTitle(`Từ chối DNTT ${code}`);
@@ -492,58 +555,88 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      const rowNum = await findRequestRowByCode(code);
-      if (!rowNum) {
-        await replyEphemeral(interaction, "❌ Không tìm thấy DNTT trong Google Sheet.");
+      if (processingCodes.has(code)) {
+        await replyEphemeral(interaction, "⏳ DNTT này đang được xử lý, vui lòng chờ...");
         return;
       }
-
-      const req = await readRequestRow(rowNum);
-      if (req.status !== "PENDING") {
-        await replyEphemeral(interaction, `❌ DNTT này đã được xử lý rồi (status: ${req.status}).`);
-        return;
-      }
-
-      const managerTag = `${interaction.user.username}#${interaction.user.discriminator}`;
-      const decisionAt = isoNow();
-
-      await updateRequestRow(rowNum, {
-        status: "REJECTED",
-        manager_tag: managerTag,
-        decision_at: decisionAt,
-        decision_reason: reason
-      });
-
-      // Update #dntt post: show reason + remove buttons
+      processingCodes.add(code);
       try {
-        const dnttChannel = await client.channels.fetch(DNTT_CHANNEL_ID);
-        const msg = await dnttChannel.messages.fetch(req.discord_message_id);
-        await msg.edit({
-          content: `⛔ **ĐÃ TỪ CHỐI** \`${code}\` | bởi **${managerTag}** | Lý do: **${reason}**`,
-          components: []
+        await interaction.deferReply({ flags: 64 });
+
+        const rowNum = await findRequestRowByCode(code);
+        if (!rowNum) {
+          await interaction.editReply({ content: "❌ Không tìm thấy DNTT trong Google Sheet." });
+          return;
+        }
+
+        const req = await readRequestRow(rowNum);
+        if (req.status !== "PENDING") {
+          await interaction.editReply({ content: `❌ DNTT này đã được xử lý rồi (status: ${req.status}).` });
+          return;
+        }
+
+        const managerTag = `${interaction.user.username}#${interaction.user.discriminator}`;
+        const decisionAt = isoNow();
+
+        await updateRequestRow(rowNum, {
+          status: "REJECTED",
+          manager_tag: managerTag,
+          decision_at: decisionAt,
+          decision_reason: reason
         });
-      } catch {}
 
-      // Notify source channel with reason
-      try {
-        const sourceChannel = await client.channels.fetch(req.source_channel_id);
-        await sourceChannel.send(
-          `⛔ <@${req.requester_id}> DNTT \`${code}\` đã **BỊ TỪ CHỐI** bởi **${managerTag}**.\nLý do: **${reason}**`
-        );
-      } catch {}
+        // Update #dntt post: show reason + remove buttons
+        try {
+          const dnttChannel = await client.channels.fetch(DNTT_CHANNEL_ID);
+          const msg = await dnttChannel.messages.fetch(req.discord_message_id);
+          await msg.edit({
+            content: `⛔ **ĐÃ TỪ CHỐI** \`${code}\` | bởi **${managerTag}** | Lý do: **${reason}**`,
+            components: []
+          });
+        } catch (editErr) {
+          console.error(`❌ Failed to edit DNTT message for rejected ${code}:`, editErr);
+        }
 
-      await replyEphemeral(interaction, `Đã từ chối DNTT \`${code}\` và gửi lý do về channel người đề nghị.`);
+        // Notify source channel with reason
+        try {
+          const sourceChannel = await client.channels.fetch(req.source_channel_id);
+          const proofUrls = parseProofUrls(req.proof_url);
+          const rejectEmbed = new EmbedBuilder()
+            .setTitle(`⛔ DNTT \`${code}\` đã BỊ TỪ CHỐI`)
+            .setColor(0xD50000)
+            .addFields(
+              { name: "Lý do", value: reason, inline: false },
+              { name: "Người từ chối", value: managerTag, inline: true },
+              { name: "Số tiền", value: `${req.amount}`, inline: true },
+              { name: "Mục đích", value: req.purpose, inline: true }
+            )
+            .setTimestamp();
+          const rejectEmbeds = buildProofEmbeds(rejectEmbed, proofUrls);
+          await sourceChannel.send({
+            content: `<@${req.requester_id}>`,
+            embeds: rejectEmbeds
+          });
+        } catch (notifyErr) {
+          console.error(`❌ Failed to notify source channel for rejected ${code}:`, notifyErr);
+        }
+
+        await interaction.editReply({ content: `Đã từ chối DNTT \`${code}\` và gửi lý do về channel người đề nghị.` });
+      } finally {
+        processingCodes.delete(code);
+      }
       return;
     }
   } catch (err) {
-    console.error(err);
+    console.error("❌ Unhandled interaction error:", err);
     try {
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp({ content: "Có lỗi xảy ra. Mở Railway logs để xem chi tiết.", flags: 64 });
       } else {
         await interaction.reply({ content: "Có lỗi xảy ra. Mở Railway logs để xem chi tiết.", flags: 64 });
       }
-    } catch {}
+    } catch (replyErr) {
+      console.error("❌ Failed to send error message to user:", replyErr);
+    }
   }
 });
 
