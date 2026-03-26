@@ -112,7 +112,8 @@ const REQUESTS_HEADER = [
   "manager_tag",
   "decision_reason",
   "decision_at",
-  "discord_message_id"
+  "discord_message_id",
+  "source_message_id"
 ];
 
 const MONTHLY_HEADER = [
@@ -146,7 +147,7 @@ async function findRequestRowByCode(code) {
 async function readRequestRow(rowNum) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: `${REQUESTS_SHEET}!A${rowNum}:N${rowNum}`
+    range: `${REQUESTS_SHEET}!A${rowNum}:O${rowNum}`
   });
   const row = (res.data.values && res.data.values[0]) ? res.data.values[0] : [];
   const obj = {};
@@ -160,7 +161,7 @@ async function updateRequestRow(rowNum, patchObj) {
   const out = REQUESTS_HEADER.map(h => merged[h] ?? "");
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
-    range: `${REQUESTS_SHEET}!A${rowNum}:N${rowNum}`,
+    range: `${REQUESTS_SHEET}!A${rowNum}:O${rowNum}`,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [out] }
   });
@@ -304,7 +305,8 @@ client.on("interactionCreate", async (interaction) => {
         "",
         "",
         "",
-        "" // discord_message_id
+        "", // discord_message_id
+        ""  // source_message_id
       ]);
 
       // Post to #dntt for manager approval
@@ -339,10 +341,6 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      // Update discord_message_id in sheet
-      const rowNum = await findRequestRowByCode(code);
-      if (rowNum) await updateRequestRow(rowNum, { discord_message_id: dnttMsgId });
-
       // Reply ephemeral confirmation
       await replyEphemeral(interaction, `✅ Đã tạo DNTT \`${code}\` và gửi sang <#${DNTT_CHANNEL_ID}> để QUẢN LÝ duyệt.`);
 
@@ -365,7 +363,11 @@ client.on("interactionCreate", async (interaction) => {
         new ButtonBuilder().setCustomId(`withdraw:${code}`).setLabel("Thu hồi").setStyle(ButtonStyle.Danger)
       );
 
-      await interaction.channel.send({ embeds: previewEmbeds, components: [withdrawRow] });
+      const previewMsg = await interaction.channel.send({ embeds: previewEmbeds, components: [withdrawRow] });
+
+      // Update discord_message_id + source_message_id in sheet
+      const rowNum = await findRequestRowByCode(code);
+      if (rowNum) await updateRequestRow(rowNum, { discord_message_id: dnttMsgId, source_message_id: previewMsg.id });
       return;
     }
 
@@ -483,7 +485,7 @@ client.on("interactionCreate", async (interaction) => {
             req.proof_url
           ]);
 
-          // Notify back to source channel (BEFORE editReply to ensure it always runs)
+          // Update preview message in source channel (edit instead of new message)
           try {
             const sourceChannel = await client.channels.fetch(req.source_channel_id);
             const proofUrls = parseProofUrls(req.proof_url);
@@ -493,14 +495,24 @@ client.on("interactionCreate", async (interaction) => {
               .addFields(
                 { name: "Số tiền", value: `${req.amount}`, inline: true },
                 { name: "Mục đích", value: req.purpose, inline: true },
-                { name: "Người duyệt", value: managerTag, inline: false }
+                { name: "Người duyệt", value: managerTag, inline: false },
+                { name: "Ghi chú", value: req.note || "-", inline: false }
               )
               .setTimestamp();
             const notifyEmbeds = buildProofEmbeds(notifyEmbed, proofUrls);
-            await sourceChannel.send({
-              content: `<@${req.requester_id}>`,
-              embeds: notifyEmbeds
-            });
+            if (req.source_message_id) {
+              const previewMsg = await sourceChannel.messages.fetch(req.source_message_id);
+              await previewMsg.edit({
+                content: `<@${req.requester_id}>`,
+                embeds: notifyEmbeds,
+                components: []
+              });
+            } else {
+              await sourceChannel.send({
+                content: `<@${req.requester_id}>`,
+                embeds: notifyEmbeds
+              });
+            }
           } catch (notifyErr) {
             console.error(`❌ Failed to notify source channel for ${code}:`, notifyErr);
           }
@@ -597,7 +609,7 @@ client.on("interactionCreate", async (interaction) => {
           console.error(`❌ Failed to edit DNTT message for rejected ${code}:`, editErr);
         }
 
-        // Notify source channel with reason
+        // Update preview message in source channel (edit instead of new message)
         try {
           const sourceChannel = await client.channels.fetch(req.source_channel_id);
           const proofUrls = parseProofUrls(req.proof_url);
@@ -612,10 +624,19 @@ client.on("interactionCreate", async (interaction) => {
             )
             .setTimestamp();
           const rejectEmbeds = buildProofEmbeds(rejectEmbed, proofUrls);
-          await sourceChannel.send({
-            content: `<@${req.requester_id}>`,
-            embeds: rejectEmbeds
-          });
+          if (req.source_message_id) {
+            const previewMsg = await sourceChannel.messages.fetch(req.source_message_id);
+            await previewMsg.edit({
+              content: `<@${req.requester_id}>`,
+              embeds: rejectEmbeds,
+              components: []
+            });
+          } else {
+            await sourceChannel.send({
+              content: `<@${req.requester_id}>`,
+              embeds: rejectEmbeds
+            });
+          }
         } catch (notifyErr) {
           console.error(`❌ Failed to notify source channel for rejected ${code}:`, notifyErr);
         }
