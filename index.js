@@ -260,8 +260,10 @@ client.on("interactionCreate", async (interaction) => {
   try {
     // 1) Create DNTT
     if (interaction.isChatInputCommand() && interaction.commandName === "dntt") {
+      console.log(`[DNTT] /dntt command received from ${interaction.user.username}`);
       // Defer ngay để Discord không timeout sau 3 giây
       await interaction.deferReply({ flags: 64 });
+      console.log("[DNTT] deferReply OK");
 
       const amount = interaction.options.getNumber("amount");
       const purpose = interaction.options.getString("purpose");
@@ -294,6 +296,7 @@ client.on("interactionCreate", async (interaction) => {
       const createdAt = isoNow();
 
       // Save pending request to sheet first (anti-restart)
+      console.log(`[DNTT] Writing to sheet: ${code}, amount=${amount}, purpose=${purpose}`);
       await appendRow(REQUESTS_SHEET, [
         code,
         createdAt,
@@ -333,11 +336,14 @@ client.on("interactionCreate", async (interaction) => {
         new ButtonBuilder().setCustomId(`reject:${code}`).setLabel("Từ chối").setStyle(ButtonStyle.Danger)
       );
 
+      console.log("[DNTT] Sheet append OK");
+
       let dnttMsgId = "";
       try {
         const dnttChannel = await client.channels.fetch(DNTT_CHANNEL_ID);
         const msg = await dnttChannel.send({ embeds: dnttEmbeds, components: [approveRow] });
         dnttMsgId = msg.id;
+        console.log(`[DNTT] Sent to DNTT channel OK, msgId=${dnttMsgId}`);
       } catch (e) {
         console.error("❌ Cannot send to DNTT channel (Missing Access?).", e?.rawError || e);
         await interaction.editReply({ content: `❌ Bot không gửi được sang <#${DNTT_CHANNEL_ID}> (thiếu quyền hoặc sai channel ID).` });
@@ -651,15 +657,19 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
   } catch (err) {
-    console.error("❌ Unhandled interaction error:", err);
+    console.error("❌ Unhandled interaction error:", err?.message || err);
     try {
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({ content: "Có lỗi xảy ra. Mở Railway logs để xem chi tiết.", flags: 64 });
+      const errMsg = `❌ Có lỗi xảy ra: ${(err?.message || "unknown").slice(0, 200)}`;
+      if (interaction.deferred) {
+        // Đã defer → phải editReply để dismiss "thinking" indicator
+        await interaction.editReply({ content: errMsg });
+      } else if (interaction.replied) {
+        await interaction.followUp({ content: errMsg, flags: 64 });
       } else {
-        await interaction.reply({ content: "Có lỗi xảy ra. Mở Railway logs để xem chi tiết.", flags: 64 });
+        await interaction.reply({ content: errMsg, flags: 64 });
       }
     } catch (replyErr) {
-      console.error("❌ Failed to send error message to user:", replyErr);
+      console.error("❌ Failed to send error message to user:", replyErr?.message || replyErr);
     }
   }
 });
