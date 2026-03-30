@@ -260,6 +260,9 @@ client.on("interactionCreate", async (interaction) => {
   try {
     // 1) Create DNTT
     if (interaction.isChatInputCommand() && interaction.commandName === "dntt") {
+      // Defer ngay để Discord không timeout sau 3 giây
+      await interaction.deferReply({ flags: 64 });
+
       const amount = interaction.options.getNumber("amount");
       const purpose = interaction.options.getString("purpose");
       const note = interaction.options.getString("note") ?? "";
@@ -269,14 +272,14 @@ client.on("interactionCreate", async (interaction) => {
         .filter(Boolean);
 
       if (proofs.length === 0) {
-        await replyEphemeral(interaction, "❌ Bạn phải upload ít nhất 1 ảnh chứng từ (proof1).");
+        await interaction.editReply({ content: "❌ Bạn phải upload ít nhất 1 ảnh chứng từ (proof1)." });
         return;
       }
 
       for (const p of proofs) {
         const ct = p?.contentType || "";
         if (!ct.startsWith("image/")) {
-          await replyEphemeral(interaction, "❌ Tất cả chứng từ phải là **hình ảnh** (jpg/png/webp).");
+          await interaction.editReply({ content: "❌ Tất cả chứng từ phải là **hình ảnh** (jpg/png/webp)." });
           return;
         }
       }
@@ -337,12 +340,12 @@ client.on("interactionCreate", async (interaction) => {
         dnttMsgId = msg.id;
       } catch (e) {
         console.error("❌ Cannot send to DNTT channel (Missing Access?).", e?.rawError || e);
-        await replyEphemeral(interaction, `❌ Bot không gửi được sang <#${DNTT_CHANNEL_ID}> (thiếu quyền hoặc sai channel ID).`);
+        await interaction.editReply({ content: `❌ Bot không gửi được sang <#${DNTT_CHANNEL_ID}> (thiếu quyền hoặc sai channel ID).` });
         return;
       }
 
       // Reply ephemeral confirmation
-      await replyEphemeral(interaction, `✅ Đã tạo DNTT \`${code}\` và gửi sang <#${DNTT_CHANNEL_ID}> để QUẢN LÝ duyệt.`);
+      await interaction.editReply({ content: `✅ Đã tạo DNTT \`${code}\` và gửi sang <#${DNTT_CHANNEL_ID}> để QUẢN LÝ duyệt.` });
 
       // Post preview in source channel + Withdraw button
       const previewEmbed = new EmbedBuilder()
