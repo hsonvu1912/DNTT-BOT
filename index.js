@@ -171,6 +171,10 @@ function memberHasManagerRole(member) {
   return member?.roles?.cache?.some(r => r.name === ROLE_MANAGER_NAME);
 }
 
+function fmtMoney(n) {
+  return Number(n).toLocaleString("vi-VN");
+}
+
 function truncateForEmbed(text, max = 950) {
   if (!text) return "-";
   if (text.length <= max) return text;
@@ -320,7 +324,7 @@ client.on("interactionCreate", async (interaction) => {
         .setTitle(`Đề nghị thanh toán (DNTT): ${code}`)
         .setColor(0xFFA500)
         .addFields(
-          { name: "Số tiền", value: `${amount}`, inline: true },
+          { name: "Số tiền", value: fmtMoney(amount), inline: true },
           { name: "Mục đích", value: purpose, inline: true },
           { name: "Người đề nghị", value: `${requesterTag}`, inline: false },
           { name: "Channel tạo", value: `<#${sourceChannelId}>`, inline: false },
@@ -359,7 +363,7 @@ client.on("interactionCreate", async (interaction) => {
         .setColor(0xFFA500)
         .setDescription("Trạng thái: **PENDING (chờ phê duyệt)**")
         .addFields(
-          { name: "Số tiền", value: `${amount}`, inline: true },
+          { name: "Số tiền", value: fmtMoney(amount), inline: true },
           { name: "Mục đích", value: purpose, inline: true },
           { name: "Ghi chú", value: note || "-", inline: false }
         )
@@ -502,7 +506,7 @@ client.on("interactionCreate", async (interaction) => {
               .setTitle(`✅ DNTT \`${code}\` đã được PHÊ DUYỆT`)
               .setColor(0x00C853)
               .addFields(
-                { name: "Số tiền", value: `${req.amount}`, inline: true },
+                { name: "Số tiền", value: fmtMoney(req.amount), inline: true },
                 { name: "Mục đích", value: req.purpose, inline: true },
                 { name: "Người duyệt", value: managerTag, inline: false },
                 { name: "Ghi chú", value: req.note || "-", inline: false }
@@ -628,7 +632,7 @@ client.on("interactionCreate", async (interaction) => {
             .addFields(
               { name: "Lý do", value: reason, inline: false },
               { name: "Người từ chối", value: managerTag, inline: true },
-              { name: "Số tiền", value: `${req.amount}`, inline: true },
+              { name: "Số tiền", value: fmtMoney(req.amount), inline: true },
               { name: "Mục đích", value: req.purpose, inline: true }
             )
             .setTimestamp();
